@@ -135,6 +135,19 @@ jobs:
           echo "✓ macOS build will use Metal GPU acceleration (enabled by default)"
           echo "✓ CoreML acceleration available for Apple Silicon"
 
+      - name: Patch cpp-httplib OpenSSL compat (llama-cpp-sys-2)
+        run: |
+          cargo fetch
+          HTTPLIB_FILE=$(find "$HOME/.cargo/registry/src" -path "*/llama-cpp-sys-2-*/llama.cpp/vendor/cpp-httplib/httplib.cpp" | head -n1)
+          if [ -z "$HTTPLIB_FILE" ]; then
+            echo "::error::vendored cpp-httplib/httplib.cpp not found in cargo registry cache"
+            exit 1
+          fi
+          echo "Patching $HTTPLIB_FILE"
+          chmod u+w "$HTTPLIB_FILE"
+          sed -i '' 's/^    X509_NAME \*name = X509_get_subject_name(cert);$/    const X509_NAME *name = X509_get_subject_name(cert);/' "$HTTPLIB_FILE"
+          grep -n "const X509_NAME \*name = X509_get_subject_name(cert);" "$HTTPLIB_FILE"
+
       - name: Build llama-helper sidecar
         run: |
           echo "Building llama-helper sidecar with Metal support..."
