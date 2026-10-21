@@ -1,3 +1,4 @@
+use crate::audio::transcription::provider::CustomTranscriptionConfig;
 use crate::database::models::{Setting, TranscriptSetting};
 use crate::summary::CustomOpenAIConfig;
 use sqlx::SqlitePool;
@@ -179,7 +180,7 @@ impl SettingsRepository {
     ) -> std::result::Result<(), sqlx::Error> {
         let api_key_column = match provider {
             "localWhisper" => "whisperApiKey",
-            "parakeet" => return Ok(()), // Parakeet doesn't need an API key, return early
+            "parakeet" | "custom-openai" => return Ok(()),
             "deepgram" => "deepgramApiKey",
             "elevenLabs" => "elevenLabsApiKey",
             "groq" => "groqApiKey",
@@ -209,6 +210,9 @@ impl SettingsRepository {
         pool: &SqlitePool,
         provider: &str,
     ) -> std::result::Result<Option<String>, sqlx::Error> {
+        if provider == "custom-openai" {
+            return Ok(Self::get_custom_transcription_config(pool).await?.and_then(|c| c.api_key));
+        }
         let api_key_column = match provider {
             "localWhisper" => "whisperApiKey",
             "parakeet" => return Ok(None), // Parakeet doesn't need an API key
@@ -263,6 +267,46 @@ impl SettingsRepository {
         );
         sqlx::query(&query).execute(pool).await?;
 
+        Ok(())
+    }
+
+    pub async fn get_custom_transcription_config(
+        pool: &SqlitePool,
+    ) -> Result<Option<CustomTranscriptionConfig>, sqlx::Error> {
+        let json: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT customTranscriptionConfig FROM transcript_settings WHERE id = '1'",
+        )
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+        json.map(|json| {
+            serde_json::from_str::<CustomTranscriptionConfig>(&json)
+                .map_err(|_| sqlx::Error::Protocol("Invalid custom transcription configuration".into()))?
+                .validated()
+                .map_err(sqlx::Error::Protocol)
+        })
+        .transpose()
+    }
+
+    pub async fn save_custom_transcription_config(
+        pool: &SqlitePool,
+        config: &CustomTranscriptionConfig,
+    ) -> Result<(), sqlx::Error> {
+        let config = config.clone().validated().map_err(sqlx::Error::Protocol)?;
+        let json = serde_json::to_string(&config)
+            .map_err(|_| sqlx::Error::Protocol("Could not serialize transcription configuration".into()))?;
+        sqlx::query(
+            r#"INSERT INTO transcript_settings (id, provider, model, customTranscriptionConfig)
+               VALUES ('1', 'custom-openai', $1, $2)
+               ON CONFLICT(id) DO UPDATE SET
+                   provider = excluded.provider,
+                   model = excluded.model,
+                   customTranscriptionConfig = excluded.customTranscriptionConfig"#,
+        )
+        .bind(&config.model)
+        .bind(json)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
@@ -344,5 +388,75 @@ impl SettingsRepository {
         .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod custom_provider_settings_tests {
+    use super::*;
+
+    async fn pool() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await.unwrap();
+        sqlx::raw_sql(include_str!("../../../migrations/20250916100000_initial_schema.sql"))
+            .execute(&pool).await.unwrap();
+        sqlx::raw_sql(include_str!("../../../migrations/20260101000000_add_custom_transcription_config.sql"))
+            .execute(&pool).await.unwrap();
+        pool
+    }
+
+    fn config(model: &str) -> CustomTranscriptionConfig {
+        CustomTranscriptionConfig {
+            endpoint: " http://localhost:8000/v1/ ".into(),
+            api_key: Some(" key ".into()),
+            model: model.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn save_inserts_and_reactivates_custom_provider_atomically() {
+        let pool = pool().await;
+        assert!(SettingsRepository::get_custom_transcription_config(&pool).await.unwrap().is_none());
+        SettingsRepository::save_custom_transcription_config(&pool, &config(" first ")).await.unwrap();
+        let row = SettingsRepository::get_transcript_config(&pool).await.unwrap().unwrap();
+        assert_eq!(row.provider, "custom-openai");
+        assert_eq!(row.model, "first");
+        assert_eq!(row.get_custom_transcription_config().unwrap().model, "first");
+        assert_eq!(SettingsRepository::get_transcript_api_key(&pool, "custom-openai").await.unwrap().as_deref(), Some("key"));
+        SettingsRepository::save_transcript_config(&pool, "localWhisper", "small").await.unwrap();
+        SettingsRepository::save_transcript_api_key(&pool, "localWhisper", "legacy").await.unwrap();
+        SettingsRepository::save_custom_transcription_config(&pool, &config("second")).await.unwrap();
+        SettingsRepository::save_transcript_api_key(&pool, "custom-openai", "ignored").await.unwrap();
+        let row = SettingsRepository::get_transcript_config(&pool).await.unwrap().unwrap();
+        assert_eq!(row.provider, "custom-openai");
+        assert_eq!(row.model, "second");
+        assert_eq!(row.whisper_api_key.as_deref(), Some("legacy"));
+        let saved = SettingsRepository::get_custom_transcription_config(&pool).await.unwrap().unwrap();
+        assert_eq!(saved.model, row.model);
+        assert_eq!(saved.endpoint, "http://localhost:8000/v1");
+        assert_eq!(saved.api_key.as_deref(), Some("key"));
+    }
+
+    #[tokio::test]
+    async fn invalid_save_preserves_active_provider_and_config() {
+        let pool = pool().await;
+        SettingsRepository::save_custom_transcription_config(&pool, &config("first")).await.unwrap();
+        assert!(SettingsRepository::save_custom_transcription_config(&pool, &config(" ")).await.is_err());
+        let row = SettingsRepository::get_transcript_config(&pool).await.unwrap().unwrap();
+        assert_eq!(row.provider, "custom-openai");
+        assert_eq!(row.model, "first");
+        assert_eq!(row.get_custom_transcription_config().unwrap().model, "first");
+    }
+
+    #[tokio::test]
+    async fn malformed_stored_config_does_not_expose_secrets() {
+        let pool = pool().await;
+        SettingsRepository::save_custom_transcription_config(&pool, &config("first")).await.unwrap();
+        sqlx::query("UPDATE transcript_settings SET customTranscriptionConfig = ?")
+            .bind(r#"{"apiKey":"secret","endpoint":secret}"#).execute(&pool).await.unwrap();
+        let error = SettingsRepository::get_custom_transcription_config(&pool).await.err().unwrap().to_string();
+        assert!(!error.contains("secret"));
     }
 }

@@ -9,6 +9,7 @@ import Analytics from '@/lib/analytics';
 import { showRecordingNotification } from '@/lib/recordingNotification';
 import {
   getProviderCommands,
+  checkTranscriptionReady,
   hasDownloadingModel,
   type ModelWithStatus,
 } from '@/lib/transcription-model-readiness';
@@ -82,15 +83,7 @@ export function useRecordingStart(
   const checkTranscriptionModelReady = useCallback(async (): Promise<boolean> => {
     try {
       const provider = await getTranscriptionProvider();
-      const commands = getProviderCommands(provider);
-
-      if (commands) {
-        await invoke(commands.initialize);
-        return await invoke<boolean>(commands.hasAvailableModels);
-      }
-
-      console.error(`Unsupported transcription provider: ${provider}`);
-      return false;
+      return await checkTranscriptionReady(provider, invoke);
     } catch (error) {
       console.error('Failed to check transcription model status:', error);
       return false;
@@ -137,7 +130,7 @@ export function useRecordingStart(
           Analytics.trackButtonClick('start_recording_blocked_downloading', 'home_page');
         } else {
           toast.error('Transcription model not ready', {
-            description: 'Please download a transcription model before recording.',
+            description: 'Download a local model or configure a custom transcription server in Settings → Transcription before recording.',
             duration: 5000,
           });
           showModal?.('modelSelector', 'Transcription model setup required');
@@ -229,7 +222,7 @@ export function useRecordingStart(
               Analytics.trackButtonClick('start_recording_blocked_downloading', 'sidebar_auto');
             } else {
               toast.error('Transcription model not ready', {
-                description: 'Please download a transcription model before recording.',
+                description: 'Download a local model or configure a custom transcription server in Settings → Transcription before recording.',
                 duration: 5000,
               });
               showModal?.('modelSelector', 'Transcription model setup required');
@@ -328,7 +321,7 @@ export function useRecordingStart(
           Analytics.trackButtonClick('start_recording_blocked_downloading', 'sidebar_direct');
         } else {
           toast.error('Transcription model not ready', {
-            description: 'Please download a transcription model before recording.',
+            description: 'Download a local model or configure a custom transcription server in Settings → Transcription before recording.',
             duration: 5000,
           });
           showModal?.('modelSelector', 'Transcription model setup required');

@@ -5,6 +5,10 @@ use tauri::{AppHandle, Runtime};
 use tauri_plugin_store::StoreExt;
 
 use crate::{
+    audio::transcription::{
+        custom_provider::CustomTranscriptionProvider,
+        provider::{CustomTranscriptionConfig, TranscriptionProvider},
+    },
     database::{
         models::MeetingModel,
         repositories::{
@@ -612,6 +616,13 @@ pub async fn api_get_transcript_config<R: Runtime>(
                 &config.provider,
                 &config.model
             );
+            if config.provider == "custom-openai" {
+                return Ok(Some(TranscriptConfig {
+                    provider: config.provider,
+                    model: config.model,
+                    api_key: None,
+                }));
+            }
             match SettingsRepository::get_transcript_api_key(pool, &config.provider).await {
                 Ok(api_key) => {
                     log_info!("Successfully retrieved transcript config and API key.");
@@ -1162,6 +1173,43 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("Failed to open URL: {}", e)),
     }
+}
+
+#[tauri::command]
+pub async fn api_save_custom_transcription_config<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    endpoint: String,
+    api_key: Option<String>,
+    model: String,
+) -> Result<serde_json::Value, String> {
+    let config = CustomTranscriptionConfig { endpoint, api_key, model }.validated()?;
+    SettingsRepository::save_custom_transcription_config(state.db_manager.pool(), &config)
+        .await
+        .map_err(|_| "Could not save custom transcription configuration".to_string())?;
+    Ok(serde_json::json!({ "status": "success" }))
+}
+
+#[tauri::command]
+pub async fn api_get_custom_transcription_config<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<CustomTranscriptionConfig>, String> {
+    SettingsRepository::get_custom_transcription_config(state.db_manager.pool())
+        .await
+        .map_err(|_| "Could not read custom transcription configuration".to_string())
+}
+
+#[tauri::command]
+pub async fn api_test_custom_transcription_connection<R: Runtime>(
+    _app: AppHandle<R>,
+    endpoint: String,
+    api_key: Option<String>,
+    model: String,
+) -> Result<serde_json::Value, String> {
+    let provider = CustomTranscriptionProvider::new(CustomTranscriptionConfig { endpoint, api_key, model })?;
+    provider.transcribe(vec![0.0; 16000], None).await.map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({ "status": "success", "message": "Transcription connection successful" }))
 }
 
 // ===== CUSTOM OPENAI API COMMANDS =====

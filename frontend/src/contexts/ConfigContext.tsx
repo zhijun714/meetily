@@ -194,24 +194,40 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     loadModels();
   }, [modelConfig.ollamaEndpoint]);
 
-  // Load transcript configuration on mount
+  // Reload after a transcription provider is saved in any settings view.
   useEffect(() => {
+    let disposed = false;
+    let revision = 0;
+    let unlisten: (() => void) | undefined;
     const loadTranscriptConfig = async () => {
+      const requestRevision = ++revision;
       try {
         const config = await configService.getTranscriptConfig();
-        if (config) {
-          console.log('[ConfigContext] Loaded saved transcript config:', config);
+        if (config && !disposed && revision === requestRevision) {
           setTranscriptModelConfig({
             provider: config.provider || 'parakeet',
             model: config.model || 'parakeet-tdt-0.6b-v3-int8',
-            apiKey: config.apiKey || null
+            apiKey: config.provider === 'custom-openai' ? null : config.apiKey || null
           });
         }
       } catch (error) {
         console.error('[ConfigContext] Failed to load transcript config:', error);
       }
     };
-    loadTranscriptConfig();
+    const subscribe = async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      const cleanup = await listen('transcript-config-updated', loadTranscriptConfig);
+      if (disposed) cleanup();
+      else {
+        unlisten = cleanup;
+        await loadTranscriptConfig();
+      }
+    };
+    subscribe().catch(error => {
+      console.error('Failed to subscribe to transcript configuration updates:', error);
+      if (!disposed) void loadTranscriptConfig();
+    });
+    return () => { disposed = true; unlisten?.(); };
   }, []);
 
   // Sync language preference to Rust on mount (fixes startup desync bug)

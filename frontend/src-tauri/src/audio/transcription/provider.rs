@@ -4,6 +4,50 @@
 // transcription engines (Whisper, Parakeet, future providers).
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CustomTranscriptionConfig {
+    pub endpoint: String,
+    #[serde(rename = "apiKey")]
+    pub api_key: Option<String>,
+    pub model: String,
+}
+
+impl CustomTranscriptionConfig {
+    pub fn validated(mut self) -> Result<Self, String> {
+        let endpoint = self.endpoint.trim();
+        let url = reqwest::Url::parse(endpoint)
+            .map_err(|_| "Enter a valid HTTP or HTTPS endpoint URL".to_string())?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err("Endpoint must be an HTTP or HTTPS URL with a host".to_string());
+        }
+        let authority = endpoint.split_once("://").map(|(_, rest)| {
+            rest.split(['/', '?', '#']).next().unwrap_or_default()
+        });
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || authority.is_some_and(|value| value.contains('@'))
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err("Endpoint must not contain credentials, a query, or a fragment".to_string());
+        }
+        self.endpoint = url.as_str().trim_end_matches('/').to_string();
+        self.model = self.model.trim().to_string();
+        if self.model.is_empty() {
+            return Err("Transcription model is required".to_string());
+        }
+        self.api_key = self.api_key
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty());
+        if let Some(key) = &self.api_key {
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {key}"))
+                .map_err(|_| "Invalid transcription API key format".to_string())?;
+        }
+        Ok(self)
+    }
+}
 
 // ============================================================================
 // TRANSCRIPTION PROVIDER TRAIT & ERROR TYPES

@@ -76,14 +76,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 api_key: None,
             }
         }
-        Err(e) => {
-            warn!("⚠️ Failed to get transcript config: {}, defaulting to parakeet", e);
-            crate::api::api::TranscriptConfig {
-                provider: "parakeet".to_string(),
-                model: crate::config::DEFAULT_PARAKEET_MODEL.to_string(),
-                api_key: None,
-            }
-        }
+        Err(_) => return Err("Could not read transcription configuration. Check Settings before recording".to_string()),
     };
 
     // Validate based on provider
@@ -135,13 +128,11 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 }
             }
         }
-        other => {
-            warn!("❌ Unsupported transcription provider for local recording: {}", other);
-            Err(format!(
-                "Provider '{}' is not supported for local transcription. Please select 'localWhisper' or 'parakeet'.",
-                other
-            ))
+        "custom-openai" => {
+            load_custom_transcription_provider(app).await?;
+            Ok(())
         }
+        other => Err(format!("Unsupported transcription provider: {}", other)),
     }
 }
 
@@ -172,14 +163,7 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 api_key: None,
             }
         }
-        Err(e) => {
-            warn!("⚠️ Failed to get transcript config: {}, defaulting to parakeet", e);
-            crate::api::api::TranscriptConfig {
-                provider: "parakeet".to_string(),
-                model: crate::config::DEFAULT_PARAKEET_MODEL.to_string(),
-                api_key: None,
-            }
-        }
+        Err(_) => return Err("Could not read transcription configuration. Check Settings before recording".to_string()),
     };
 
     // Initialize the appropriate engine based on provider
@@ -212,12 +196,29 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 }
             }
         }
-        "localWhisper" | _ => {
+        "custom-openai" => Ok(TranscriptionEngine::Provider(Arc::new(
+            load_custom_transcription_provider(app).await?,
+        ))),
+        "localWhisper" => {
             info!("🎤 Initializing Whisper transcription engine");
             let whisper_engine = get_or_init_whisper(app).await?;
             Ok(TranscriptionEngine::Whisper(whisper_engine))
         }
+        other => Err(format!("Unsupported transcription provider: {}", other)),
     }
+}
+
+async fn load_custom_transcription_provider<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<super::custom_provider::CustomTranscriptionProvider, String> {
+    let state = app.state::<crate::state::AppState>();
+    let config = crate::database::repositories::setting::SettingsRepository::get_custom_transcription_config(
+        state.db_manager.pool(),
+    )
+    .await
+    .map_err(|_| "Could not read custom transcription configuration".to_string())?
+    .ok_or_else(|| "Configure a custom transcription endpoint and model in Settings".to_string())?;
+    super::custom_provider::CustomTranscriptionProvider::new(config)
 }
 
 /// Get or initialize transcription engine using API configuration

@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Input } from './ui/input';
 import { Button } from './ui/button';
@@ -7,10 +8,11 @@ import { Label } from './ui/label';
 import { Eye, EyeOff, Lock, Unlock } from 'lucide-react';
 import { ModelManager } from './WhisperModelManager';
 import { ParakeetModelManager } from './ParakeetModelManager';
+import { CustomTranscriptionSettings } from './CustomTranscriptionSettings';
 
 
 export interface TranscriptModelProps {
-    provider: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
+    provider: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai' | 'custom-openai';
     model: string;
     apiKey?: string | null;
 }
@@ -27,6 +29,10 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const [isApiKeyLocked, setIsApiKeyLocked] = useState<boolean>(true);
     const [isLockButtonVibrating, setIsLockButtonVibrating] = useState<boolean>(false);
     const [uiProvider, setUiProvider] = useState<TranscriptModelProps['provider']>(transcriptModelConfig.provider);
+    const [isCustomRequestPending, setIsCustomRequestPending] = useState(false);
+    const [isLocalSavePending, setIsLocalSavePending] = useState(false);
+    const [localSaveError, setLocalSaveError] = useState('');
+    const localSavePending = useRef(false);
 
     // Sync uiProvider when backend config changes (e.g., after model selection or initial load)
     useEffect(() => {
@@ -45,8 +51,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             const data = await invoke('api_get_transcript_api_key', { provider }) as string;
 
             setApiKey(data || '');
-        } catch (err) {
-            console.error('Error fetching API key:', err);
+        } catch {
             setApiKey(null);
         }
     };
@@ -58,7 +63,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         groq: ['llama-3.3-70b-versatile'],
         openai: ['gpt-4o'],
     };
-    const requiresApiKey = transcriptModelConfig.provider === 'deepgram' || transcriptModelConfig.provider === 'elevenLabs' || transcriptModelConfig.provider === 'openai' || transcriptModelConfig.provider === 'groq';
+    const requiresApiKey = uiProvider === 'deepgram' || uiProvider === 'elevenLabs' || uiProvider === 'openai' || uiProvider === 'groq';
 
     const handleInputClick = () => {
         if (isApiKeyLocked) {
@@ -67,32 +72,30 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         }
     };
 
-    const handleWhisperModelSelect = (modelName: string) => {
-        // Always update config when model is selected, regardless of current provider
-        // This ensures the model is set when user switches back
-        setTranscriptModelConfig({
-            ...transcriptModelConfig,
-            provider: 'localWhisper', // Ensure provider is set correctly
-            model: modelName
-        });
-        // Close modal after selection
-        if (onModelSelect) {
-            onModelSelect();
+    const handleLocalModelSelect = async (provider: 'localWhisper' | 'parakeet', model: string) => {
+        if (localSavePending.current) return;
+        localSavePending.current = true;
+        setIsLocalSavePending(true);
+        setLocalSaveError('');
+        try {
+            // Managers call onModelSelect before their own auto-save. Own persistence here
+            // so shared state and recording readiness only change after a successful save.
+            await invoke('api_save_transcript_config', { provider, model, apiKey: null });
+        } catch {
+            setLocalSaveError('Could not save the local transcription model. Please try again.');
+            localSavePending.current = false;
+            setIsLocalSavePending(false);
+            return;
         }
-    };
-
-    const handleParakeetModelSelect = (modelName: string) => {
-        // Always update config when model is selected, regardless of current provider
-        // This ensures the model is set when user switches back
-        setTranscriptModelConfig({
-            ...transcriptModelConfig,
-            provider: 'parakeet', // Ensure provider is set correctly
-            model: modelName
-        });
-        // Close modal after selection
-        if (onModelSelect) {
-            onModelSelect();
+        try {
+            await emit('transcript-config-updated', { provider, model });
+        } catch {
+            // Saving succeeded; notification failure must not prevent the state update.
         }
+        localSavePending.current = false;
+        setIsLocalSavePending(false);
+        setTranscriptModelConfig({ provider, model, apiKey: null });
+        onModelSelect?.();
     };
 
     return (
@@ -109,10 +112,12 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                         <div className="flex space-x-2 mx-1">
                             <Select
                                 value={uiProvider}
+                                disabled={isCustomRequestPending || isLocalSavePending}
                                 onValueChange={(value) => {
                                     const provider = value as TranscriptModelProps['provider'];
                                     setUiProvider(provider);
-                                    if (provider !== 'localWhisper' && provider !== 'parakeet') {
+                                    setLocalSaveError('');
+                                    if (provider !== 'localWhisper' && provider !== 'parakeet' && provider !== 'custom-openai') {
                                         fetchApiKey(provider);
                                     }
                                 }}
@@ -123,6 +128,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 <SelectContent>
                                     <SelectItem value="parakeet">⚡ Parakeet (Recommended - Real-time / Accurate)</SelectItem>
                                     <SelectItem value="localWhisper">🏠 Local Whisper (High Accuracy)</SelectItem>
+                                    <SelectItem value="custom-openai">Custom (OpenAI-compatible transcription)</SelectItem>
                                     {/* <SelectItem value="deepgram">☁️ Deepgram (Backup)</SelectItem>
                                     <SelectItem value="elevenLabs">☁️ ElevenLabs</SelectItem>
                                     <SelectItem value="groq">☁️ Groq</SelectItem>
@@ -130,7 +136,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 </SelectContent>
                             </Select>
 
-                            {uiProvider !== 'localWhisper' && uiProvider !== 'parakeet' && (
+                            {uiProvider !== 'localWhisper' && uiProvider !== 'parakeet' && uiProvider !== 'custom-openai' && (
                                 <Select
                                     value={transcriptModelConfig.model}
                                     onValueChange={(value) => {
@@ -152,26 +158,39 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                         </div>
                     </div>
 
+                    {uiProvider === 'custom-openai' && (
+                        <CustomTranscriptionSettings
+                            onPendingChange={setIsCustomRequestPending}
+                            onSaved={(model) => {
+                                setTranscriptModelConfig({ provider: 'custom-openai', model, apiKey: null });
+                                onModelSelect?.();
+                            }}
+                        />
+                    )}
+
                     {uiProvider === 'localWhisper' && (
-                        <div className="mt-6">
+                        <fieldset className="mt-6" disabled={isLocalSavePending}>
                             <ModelManager
                                 selectedModel={transcriptModelConfig.provider === 'localWhisper' ? transcriptModelConfig.model : undefined}
-                                onModelSelect={handleWhisperModelSelect}
-                                autoSave={true}
+                                onModelSelect={(model) => void handleLocalModelSelect('localWhisper', model)}
+                                autoSave={false}
                             />
-                        </div>
+                        </fieldset>
                     )}
 
                     {uiProvider === 'parakeet' && (
-                        <div className="mt-6">
+                        <fieldset className="mt-6" disabled={isLocalSavePending}>
                             <ParakeetModelManager
                                 selectedModel={transcriptModelConfig.provider === 'parakeet' ? transcriptModelConfig.model : undefined}
-                                onModelSelect={handleParakeetModelSelect}
-                                autoSave={true}
+                                onModelSelect={(model) => void handleLocalModelSelect('parakeet', model)}
+                                autoSave={false}
                             />
-                        </div>
+                        </fieldset>
                     )}
 
+
+                    {isLocalSavePending && <p role="status" className="text-sm text-gray-600">Saving transcription model...</p>}
+                    {localSaveError && <p role="alert" className="text-sm text-red-600">{localSaveError}</p>}
 
                     {requiresApiKey && (
                         <div>
