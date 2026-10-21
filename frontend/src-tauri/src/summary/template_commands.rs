@@ -1,7 +1,71 @@
 use crate::summary::templates;
 use serde::{Deserialize, Serialize};
-use tauri::Runtime;
+use tauri::{Emitter, Runtime};
+use tauri_plugin_store::StoreExt;
+use once_cell::sync::Lazy;
 use tracing::{info, warn};
+
+// Serialize mutations, including preference changes, before broadcasting refreshes.
+static TEMPLATE_MUTATIONS: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
+
+fn notify<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if let Err(error) = app.emit("templates-updated", ()) {
+        warn!("Template saved but refresh notification failed: {}", error);
+    }
+}
+
+#[tauri::command]
+pub async fn api_get_template_editor<R: Runtime>(
+    _app: tauri::AppHandle<R>, template_id: String,
+) -> Result<templates::TemplateEditor, String> {
+    templates::repository()?.get(&template_id)
+}
+
+#[tauri::command]
+pub async fn api_save_template<R: Runtime>(
+    app: tauri::AppHandle<R>, template_id: String, template: templates::Template, create: bool,
+) -> Result<templates::TemplateEditor, String> {
+    let _guard = TEMPLATE_MUTATIONS.lock().await;
+    let saved = templates::repository()?.save(&template_id, &template, create)?;
+    notify(&app);
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn api_delete_template<R: Runtime>(
+    app: tauri::AppHandle<R>, template_id: String,
+) -> Result<(), String> {
+    let _guard = TEMPLATE_MUTATIONS.lock().await;
+    templates::repository()?.delete(&template_id)?;
+    // A deleted preference is harmless: all reads resolve unavailable IDs to standard_meeting.
+    notify(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn api_get_default_template<R: Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
+    let _guard = TEMPLATE_MUTATIONS.lock().await;
+    let store = app.store("template_preferences.json").map_err(|e| e.to_string())?;
+    let saved = store.get("default_template");
+    Ok(templates::repository()?.resolve_default(saved.as_ref().and_then(|v| v.as_str())))
+}
+
+#[tauri::command]
+pub async fn api_set_default_template<R: Runtime>(
+    app: tauri::AppHandle<R>, template_id: String,
+) -> Result<(), String> {
+    let _guard = TEMPLATE_MUTATIONS.lock().await;
+    templates::repository()?.get(&template_id)?;
+    let store = app.store("template_preferences.json").map_err(|e| e.to_string())?;
+    let previous = store.get("default_template");
+    store.set("default_template", serde_json::json!(template_id));
+    if let Err(error) = store.save() {
+        match previous { Some(value) => store.set("default_template", value), None => { store.delete("default_template"); } }
+        return Err(format!("Cannot save default template: {error}"));
+    }
+    notify(&app);
+    Ok(())
+}
 
 /// Template metadata for UI display
 #[derive(Debug, Serialize, Deserialize)]

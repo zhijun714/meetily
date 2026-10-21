@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical } from 'lucide-react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical, FolderOpen, FileText } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
@@ -10,6 +10,9 @@ import { RecordingSettings } from '@/components/RecordingSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
 import { BetaSettings } from '@/components/BetaSettings';
+import { DocumentSettings } from '@/components/DocumentSettings';
+import { TemplateSettings } from '@/components/TemplateSettings';
+import { requestNavigation } from '@/lib/navigation-guard';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
@@ -19,6 +22,8 @@ const TABS = [
   { value: 'recording', label: 'Recordings', icon: Mic },
   { value: 'Transcriptionmodels', label: 'Transcription', icon: DatabaseIcon },
   { value: 'summaryModels', label: 'Summary', icon: SparkleIcon },
+  { value: 'documents', label: 'Documents', icon: FolderOpen },
+  { value: 'templates', label: 'Templates', icon: FileText },
   { value: 'beta', label: 'Beta', icon: FlaskConical }
 ] as const;
 
@@ -28,6 +33,7 @@ export default function SettingsPage() {
 
   // Animation state for tabs
   const [activeTab, setActiveTab] = useState('general');
+  const navigate = requestNavigation;
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [underlineStyle, setUnderlineStyle] = useState({ left: 0, width: 0 });
 
@@ -69,7 +75,7 @@ export default function SettingsPage() {
         <div className="max-w-6xl mx-auto px-8 py-6">
           <div className="flex items-center gap-4">
             <button
-              onClick={() => router.back()}
+              onClick={() => void navigate(() => router.back())}
               className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />
@@ -84,8 +90,9 @@ export default function SettingsPage() {
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-6xl mx-auto p-8 pt-6">
           {/* Tabs */}
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="bg-transparent relative rounded-none border-b border-gray-200 p-0 h-auto">
+          <Tabs value={activeTab} onValueChange={value => void navigate(() => setActiveTab(value))}>
+            <div className="overflow-x-auto">
+            <TabsList className="bg-transparent relative rounded-none border-b border-gray-200 p-0 h-auto w-max">
               {TABS.map((tab, index) => {
                 const Icon = tab.icon;
                 return (
@@ -108,6 +115,7 @@ export default function SettingsPage() {
                 transition={{ type: 'spring', stiffness: 400, damping: 40 }}
               />
             </TabsList>
+            </div>
 
             <TabsContent value="general">
               <PreferenceSettings />
@@ -123,6 +131,12 @@ export default function SettingsPage() {
             </TabsContent>
             <TabsContent value="summaryModels">
               <SummaryModelSettings />
+            </TabsContent>
+            <TabsContent value="documents">
+              <DocumentSettings />
+            </TabsContent>
+            <TabsContent value="templates">
+              <TemplateSettings />
             </TabsContent>
             <TabsContent value="beta" className="mt-6">
               <BetaSettings />

@@ -41,6 +41,7 @@ pub mod audio;
 pub mod config;
 pub mod console_utils;
 pub mod database;
+pub mod documents;
 pub mod notifications;
 pub mod ollama;
 pub mod onboarding;
@@ -756,6 +757,18 @@ pub fn run() {
             summary::template_commands::api_list_templates,
             summary::template_commands::api_get_template_details,
             summary::template_commands::api_validate_template,
+            summary::template_commands::api_get_template_editor,
+            summary::template_commands::api_save_template,
+            summary::template_commands::api_delete_template,
+            summary::template_commands::api_get_default_template,
+            summary::template_commands::api_set_default_template,
+            // Document storage and export commands
+            documents::api_get_document_preferences,
+            documents::api_save_document_preferences,
+            documents::api_select_document_directory,
+            documents::api_open_document_directory,
+            documents::api_export_meeting_document,
+            documents::api_get_document_export_status,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
             summary::summary_engine::commands::builtin_ai_get_model_info,

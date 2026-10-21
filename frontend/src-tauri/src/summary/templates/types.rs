@@ -37,11 +37,11 @@ pub struct Template {
 impl Template {
     /// Validates the template structure
     pub fn validate(&self) -> Result<(), String> {
-        if self.name.is_empty() {
+        if self.name.trim().is_empty() {
             return Err("Template name cannot be empty".to_string());
         }
 
-        if self.description.is_empty() {
+        if self.description.trim().is_empty() {
             return Err("Template description cannot be empty".to_string());
         }
 
@@ -50,11 +50,11 @@ impl Template {
         }
 
         for (i, section) in self.sections.iter().enumerate() {
-            if section.title.is_empty() {
+            if section.title.trim().is_empty() {
                 return Err(format!("Section {} has empty title", i));
             }
 
-            if section.instruction.is_empty() {
+            if section.instruction.trim().is_empty() {
                 return Err(format!("Section '{}' has empty instruction", section.title));
             }
 
@@ -88,9 +88,15 @@ impl Template {
         );
 
         for section in &self.sections {
+            let output_format = match section.format.as_str() {
+                "paragraph" => "Write prose paragraphs. Do not use a bullet list.",
+                "list" => "Write a Markdown bullet list, with one item per point.",
+                "string" => "Write a single concise line of plain text, without bullets or line breaks.",
+                _ => "",
+            };
             instructions.push_str(&format!(
-                "- **For the '{}' section:** {}.\n",
-                section.title, section.instruction
+                "- **For the '{}' section:** {}.\n  Output format: {}\n",
+                section.title, section.instruction, output_format
             ));
 
             // Add item format instructions if present
@@ -130,6 +136,31 @@ mod tests {
         };
 
         assert!(template.validate().is_ok());
+    }
+
+    #[test]
+    fn template_format_instructions_follow_their_sections_and_preserve_hints() {
+        let mut template = Template { name: "Formats".into(), description: "Test".into(), sections: vec![] };
+        for format in ["paragraph", "list", "string"] {
+            template.sections.push(TemplateSection { title: format.into(), instruction: format!("Extract {format}"), format: format.into(), item_format: None, example_item_format: Some("legacy hint".into()) });
+        }
+        let prompt = template.to_section_instructions();
+        assert!(prompt.contains("'paragraph' section:** Extract paragraph.\n  Output format: Write prose paragraphs"));
+        assert!(prompt.contains("'list' section:** Extract list.\n  Output format: Write a Markdown bullet list"));
+        assert!(prompt.contains("'string' section:** Extract string.\n  Output format: Write a single concise line"));
+        assert!(prompt.contains("legacy hint"));
+        template.sections[0].item_format = Some("preferred hint".into());
+        assert!(template.to_section_instructions().contains("preferred hint"));
+    }
+
+    #[test]
+    fn template_whitespace_fields_are_rejected() {
+        let valid = Template { name: "Test".into(), description: "Test".into(), sections: vec![TemplateSection { title: "Summary".into(), instruction: "Summarize".into(), format: "paragraph".into(), item_format: None, example_item_format: None }] };
+        for field in 0..4 {
+            let mut value = valid.clone();
+            match field { 0 => value.name = " \n".into(), 1 => value.description = "\t".into(), 2 => value.sections[0].title = " ".into(), _ => value.sections[0].instruction = "\n".into() }
+            assert!(value.validate().is_err());
+        }
     }
 
     #[test]

@@ -10,6 +10,7 @@ import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SettingTabs } from '../SettingTabs';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
 import Analytics from '@/lib/analytics';
+import { requestNavigation } from '@/lib/navigation-guard';
 import { invoke } from '@tauri-apps/api/core';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
@@ -319,8 +320,10 @@ const Sidebar: React.FC = () => {
 
       // If deleting the active meeting, navigate to home
       if (currentMeeting?.id === itemId) {
-        setCurrentMeeting({ id: 'intro-call', title: '+ New Call' });
-        router.push('/');
+        await requestNavigation(() => {
+          setCurrentMeeting({ id: 'intro-call', title: '+ New Call' });
+          router.push('/');
+        });
       }
     } catch (error) {
       console.error('Failed to delete meeting:', error);
@@ -435,7 +438,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => router.push('/')}
+                onClick={() => void requestNavigation(() => router.push('/'))}
                 className={`p-2 rounded-lg transition-colors duration-150 ${isHomePage ? 'bg-gray-100' : 'hover:bg-gray-100'
                   }`}
               >
@@ -503,7 +506,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => router.push('/settings')}
+                onClick={() => void requestNavigation(() => router.push('/settings'))}
                 className={`p-2 rounded-lg transition-colors duration-150 ${isSettingsPage ? 'bg-gray-100' : 'hover:bg-gray-100'
                   }`}
               >
@@ -553,10 +556,12 @@ const Sidebar: React.FC = () => {
             if (item.type === 'folder') {
               toggleFolder(item.id);
             } else {
-              setCurrentMeeting({ id: item.id, title: item.title });
-              const basePath = item.id.startsWith('intro-call') ? '/' :
-                item.id.includes('-') ? `/meeting-details?id=${item.id}` : `/notes/${item.id}`;
-              router.push(basePath);
+              void requestNavigation(() => {
+                setCurrentMeeting({ id: item.id, title: item.title });
+                const basePath = item.id.startsWith('intro-call') ? '/' :
+                  item.id.includes('-') ? `/meeting-details?id=${item.id}` : `/notes/${item.id}`;
+                router.push(basePath);
+              });
             }
           }}
         >
@@ -700,7 +705,7 @@ const Sidebar: React.FC = () => {
           <div className="flex-shrink-0">
             {!isCollapsed && (
               <div
-                onClick={() => router.push('/')}
+                onClick={() => void requestNavigation(() => router.push('/'))}
                 className="p-3  text-lg font-semibold items-center hover:bg-gray-100 h-10   flex mx-3 mt-3 rounded-lg cursor-pointer"
               >
                 <Home className="w-4 h-4 mr-2" />
@@ -779,7 +784,7 @@ const Sidebar: React.FC = () => {
             )}
 
             <button
-              onClick={() => router.push('/settings')}
+              onClick={() => void requestNavigation(() => router.push('/settings'))}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
               <Settings className="w-4 h-4 mr-2" />

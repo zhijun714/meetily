@@ -939,7 +939,7 @@ pub async fn api_save_meeting_title<R: Runtime>(
 
 #[tauri::command]
 pub async fn api_save_transcript<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     meeting_title: String,
     transcripts: Vec<serde_json::Value>,
@@ -997,10 +997,14 @@ pub async fn api_save_transcript<R: Runtime>(
                 "Successfully saved transcript and created meeting with id: {}",
                 meeting_id
             );
+            let document_export = crate::documents::after_commit(
+                &app, pool, &meeting_id, crate::documents::DocumentKind::Transcript,
+            ).await;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Transcript saved successfully",
-                "meeting_id": meeting_id
+                "meeting_id": meeting_id,
+                "document_export": document_export
             }))
         }
         Err(e) => {

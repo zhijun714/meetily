@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Analytics from '@/lib/analytics';
+import { requestNavigation } from '@/lib/navigation-guard';
 import { invoke } from '@tauri-apps/api/core';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import type { SummaryProcessResponse } from '@/types';
@@ -164,8 +165,10 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       } else {
         // Not on home - navigate and use auto-start mechanism
         console.log('Navigating to home page with auto-start flag');
-        sessionStorage.setItem('autoStartRecording', 'true');
-        router.push('/');
+        void requestNavigation(() => {
+          sessionStorage.setItem('autoStartRecording', 'true');
+          router.push('/');
+        });
       }
 
       // Track recording initiation from sidebar

@@ -40,6 +40,10 @@
 mod defaults;
 mod loader;
 mod types;
+mod management;
+
+pub use management::{TemplateEditor, TemplateSource};
+pub use loader::repository;
 
 // Re-export public API
 pub use loader::{

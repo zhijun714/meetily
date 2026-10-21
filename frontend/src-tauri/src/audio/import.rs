@@ -646,6 +646,10 @@ async fn run_import<R: Runtime>(
     )
     .await?;
 
+    crate::documents::after_commit(
+        &app, app_state.db_manager.pool(), &meeting_id, crate::documents::DocumentKind::Transcript,
+    ).await;
+
     // Write transcripts.json and metadata.json to the meeting folder
     emit_progress(&app, "saving", 90, "Writing transcript files...");
 

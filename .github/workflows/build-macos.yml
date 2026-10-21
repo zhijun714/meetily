@@ -114,11 +114,11 @@ jobs:
         with:
           bun-version: '1.3.14'
 
-      - name: Check frontend types and transcription settings
+      - name: Check frontend types, document and template settings
         working-directory: frontend
         run: |
           pnpm exec tsc --noEmit --incremental false
-          bun test tests/lib/transcription-model-readiness.test.ts tests/lib/custom-transcription-settings.test.tsx tests/lib/transcription-connection-error.test.ts
+          bun test tests/lib/transcription-model-readiness.test.ts tests/lib/custom-transcription-settings.test.tsx tests/lib/transcription-connection-error.test.ts tests/lib/document-settings.test.tsx tests/lib/template-settings.test.tsx tests/lib/template-editor.test.ts tests/lib/navigation-guard.test.ts tests/hooks/templates.test.tsx
 
       - name: Import Apple Developer Certificate
         if: ${{ github.event.inputs.sign-build == 'true' }}
@@ -217,9 +217,12 @@ jobs:
           projectPath: frontend
           args: --target aarch64-apple-darwin --config src-tauri/tauri.unsigned.conf.json ${{ steps.build-profile.outputs.args }}
 
-      - name: Test custom transcription provider
+      - name: Test transcription, document storage and templates
         working-directory: frontend/src-tauri
-        run: cargo test --locked --target aarch64-apple-darwin --lib custom_provider
+        run: |
+          cargo test --locked --target aarch64-apple-darwin --lib custom_provider
+          cargo test --locked --target aarch64-apple-darwin --lib documents::
+          cargo test --locked --target aarch64-apple-darwin --lib summary::templates
 
       - name: Verify build artifacts
         run: |

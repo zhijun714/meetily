@@ -613,6 +613,9 @@ impl SummaryService {
                                 error!("Failed to update meeting name for {}: {}", meeting_id, error);
                             }
                         }
+                        crate::documents::after_commit(
+                            &_app, &pool, &meeting_id, crate::documents::DocumentKind::Summary,
+                        ).await;
                         info!("Summary saved successfully for meeting_id: {}", meeting_id);
                     }
                     Ok(false) => warn!("Skipped stale summary completion for meeting_id: {}", meeting_id),

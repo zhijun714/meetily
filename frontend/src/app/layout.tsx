@@ -25,6 +25,7 @@ import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcess
 import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
+import type { DocumentExportResult } from '@/components/MeetingDetails/DocumentExports'
 
 
 const sourceSans3 = Source_Sans_3({
@@ -97,6 +98,20 @@ export default function RootLayout({
         setOnboardingCompleted(false)
       })
   }, [])
+
+  // Document failures occur on recording/import pages as well as meeting details.
+  useEffect(() => {
+    const unlisten = listen<DocumentExportResult>('document-export-result', ({ payload }) => {
+      if (payload.error && !payload.skipped) {
+        toast.error('Meeting saved; document export failed', {
+          id: `document-export-${payload.meeting_id}-${payload.kind}`,
+          description: `${payload.error} Retry from the meeting's Documents controls.`,
+          duration: 10000,
+        });
+      }
+    });
+    return () => { void unlisten.then(cleanup => cleanup()).catch(() => {}); };
+  }, []);
 
   // Disable context menu in production
   useEffect(() => {

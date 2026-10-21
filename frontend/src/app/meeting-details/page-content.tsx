@@ -8,6 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
+import { DocumentExports } from '@/components/MeetingDetails/DocumentExports';
 import { MeetingDetailsSplitView, type MeetingDetailsTab } from '@/components/MeetingDetails/MeetingDetailsSplitView';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 
@@ -121,7 +122,7 @@ export default function PageContent({
     meeting,
     transcripts: meetingData.transcripts,
     modelConfig: modelConfig,
-    isModelConfigLoading,
+    isModelConfigLoading: isModelConfigLoading || templates.isLoading,
     selectedTemplate: templates.selectedTemplate,
     onMeetingUpdated,
     updateMeetingTitle: meetingData.updateMeetingTitle,
@@ -163,6 +164,7 @@ export default function PageContent({
       !shouldAutoGenerate
       || summaryGeneration.summaryStatus !== 'idle'
       || isModelConfigLoading
+      || templates.isLoading
       || meetingData.transcripts.length === 0
       || autoGenerationStartedMeetingIdRef.current === meeting.id
     ) {
@@ -178,6 +180,7 @@ export default function PageContent({
     meeting.id,
     meetingData.transcripts.length,
     isModelConfigLoading,
+    templates.isLoading,
     modelConfig.provider,
     modelConfig.model,
     summaryGeneration.handleGenerateSummary,
@@ -192,6 +195,7 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen min-w-0 bg-gray-50"
     >
+      <DocumentExports meetingId={meeting.id} />
       <div className="flex flex-1 min-w-0 overflow-hidden">
         <MeetingDetailsSplitView
           activeTab={activeTab}
@@ -247,7 +251,7 @@ export default function PageContent({
               availableTemplates={templates.availableTemplates}
               selectedTemplate={templates.selectedTemplate}
               onTemplateSelect={templates.handleTemplateSelection}
-              isModelConfigLoading={isModelConfigLoading}
+              isModelConfigLoading={isModelConfigLoading || templates.isLoading}
               onOpenModelSettings={handleRegisterModalOpen}
             />
           }
