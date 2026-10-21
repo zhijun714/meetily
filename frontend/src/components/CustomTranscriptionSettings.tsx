@@ -4,6 +4,7 @@ import { emit } from '@tauri-apps/api/event';
 import { Input } from './ui/input';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
+import { transcriptionConnectionError } from '@/lib/transcription-connection-error';
 
 interface CustomTranscriptionConfig {
     endpoint: string;
@@ -92,12 +93,11 @@ export function CustomTranscriptionSettings({ onSaved, onPendingChange }: Custom
             await invoke(action === 'save'
                 ? 'api_save_custom_transcription_config'
                 : 'api_test_custom_transcription_connection', payload);
-        } catch {
-            // Backend/network errors may include credentials; keep them out of logs and UI.
+        } catch (error) {
             if (mounted.current) {
                 setError(action === 'save'
                     ? 'Could not save custom transcription settings. Check the configuration and try again.'
-                    : 'Connection test failed. Check the endpoint, model, API key, and server support for audio/transcriptions.');
+                    : transcriptionConnectionError(error));
             }
             pending.current = false;
             if (mounted.current) {

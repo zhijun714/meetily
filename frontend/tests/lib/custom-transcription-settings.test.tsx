@@ -126,6 +126,15 @@ describe('custom transcription settings', () => {
         expect(button('Test Connection').props.disabled).toBe(false);
     });
 
+    test('shows safe HTTP diagnostics from the backend', async () => {
+        connectionTest = async () => { throw 'Transcription engine failed: Custom transcription endpoint returned HTTP 401'; };
+        await show();
+        await click('Test Connection');
+        expect(text()).toContain('HTTP 401');
+        expect(text()).toContain('Authentication failed');
+        expect(onSaved).not.toHaveBeenCalled();
+    });
+
     test('load failure blocks saving until retry successfully hydrates', async () => {
         load = async () => { throw new Error('load failure'); };
         await show();

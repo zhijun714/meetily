@@ -118,7 +118,7 @@ jobs:
         working-directory: frontend
         run: |
           pnpm exec tsc --noEmit --incremental false
-          bun test tests/lib/transcription-model-readiness.test.ts tests/lib/custom-transcription-settings.test.tsx
+          bun test tests/lib/transcription-model-readiness.test.ts tests/lib/custom-transcription-settings.test.tsx tests/lib/transcription-connection-error.test.ts
 
       - name: Import Apple Developer Certificate
         if: ${{ github.event.inputs.sign-build == 'true' }}
