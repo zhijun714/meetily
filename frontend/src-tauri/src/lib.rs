@@ -763,10 +763,10 @@ pub fn run() {
             summary::template_commands::api_get_default_template,
             summary::template_commands::api_set_default_template,
             // Document storage and export commands
-            documents::api_get_document_preferences,
-            documents::api_save_document_preferences,
-            documents::api_select_document_directory,
-            documents::api_open_document_directory,
+            documents::preferences::api_get_document_preferences,
+            documents::preferences::api_save_document_preferences,
+            documents::preferences::api_select_document_directory,
+            documents::preferences::api_open_document_directory,
             documents::api_export_meeting_document,
             documents::api_get_document_export_status,
             // Built-in AI commands

@@ -1,8 +1,7 @@
 //! Derived meeting documents. All callers invoke this only after their DB save succeeds.
 mod format;
-mod preferences;
+pub mod preferences;
 mod service;
-pub use preferences::{api_get_document_preferences, api_save_document_preferences, api_select_document_directory, api_open_document_directory};
 
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
