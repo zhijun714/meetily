@@ -3,6 +3,7 @@ import { Globe } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
+import type { TranscriptModelProps } from './TranscriptSettings';
 
 export interface Language {
   code: string;
@@ -118,7 +119,7 @@ interface LanguageSelectionProps {
   selectedLanguage: string;
   onLanguageChange: (language: string) => void;
   disabled?: boolean;
-  provider?: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
+  provider?: TranscriptModelProps['provider'];
 }
 
 export function LanguageSelection({
@@ -134,7 +135,9 @@ export function LanguageSelection({
   const isParakeet = provider === 'parakeet';
   const availableLanguages = isParakeet
     ? LANGUAGES.filter(lang => lang.code === 'auto' || lang.code === 'auto-translate')
-    : LANGUAGES;
+    : provider === 'custom-openai'
+      ? LANGUAGES.filter(lang => lang.code !== 'auto-translate')
+      : LANGUAGES;
 
   const handleLanguageChange = async (languageCode: string) => {
     setSaving(true);
