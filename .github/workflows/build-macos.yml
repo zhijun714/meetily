@@ -229,6 +229,8 @@ jobs:
       - name: Test transcription, document storage and templates
         working-directory: frontend/src-tauri
         run: |
+          cargo test --locked --target aarch64-apple-darwin --lib companion::
+          cargo test --locked --target aarch64-apple-darwin --lib stopping_guard_tests
           cargo test --locked --target aarch64-apple-darwin --lib custom_provider
           cargo test --locked --target aarch64-apple-darwin --lib documents::
           cargo test --locked --target aarch64-apple-darwin --lib summary::

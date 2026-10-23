@@ -78,14 +78,29 @@ fn session_live(s: &Arc<super::RecordingState>) -> bool {
 /// and the stuck-flag failure mode returns — add a start-time reset then.
 struct StoppingGuard;
 impl StoppingGuard {
-    fn new() -> Self {
-        IS_RECORDING_STOPPING.store(true, Ordering::SeqCst);
-        StoppingGuard
+    fn try_new() -> Result<Self, String> {
+        IS_RECORDING_STOPPING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map(|_| StoppingGuard)
+            .map_err(|_| "Recording stop already in progress".to_string())
     }
 }
 impl Drop for StoppingGuard {
     fn drop(&mut self) {
         IS_RECORDING_STOPPING.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod stopping_guard_tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_stop_is_rejected_until_guard_drops() {
+        let first = StoppingGuard::try_new().unwrap();
+        assert!(StoppingGuard::try_new().is_err());
+        drop(first);
+        assert!(StoppingGuard::try_new().is_ok());
     }
 }
 
@@ -672,17 +687,29 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     Ok(())
 }
 
+pub(crate) fn current_session() -> Option<Arc<super::RecordingState>> {
+    RECORDING_MANAGER.lock().unwrap().as_ref().map(|manager| manager.get_state().clone())
+}
+
 /// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
-pub async fn stop_recording<R: Runtime>(
+pub async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> Result<(), String> {
+    stop_recording_for_session(app, args, None).await
+}
+
+pub(crate) async fn stop_recording_for_session<R: Runtime>(
     app: AppHandle<R>,
     _args: RecordingArgs,
+    expected_session: Option<Arc<super::RecordingState>>,
 ) -> Result<(), String> {
     info!(
         "🛑 Starting optimized recording shutdown - ensuring ALL transcript chunks are preserved"
     );
 
-    // Check if recording is active
+    // Claim shutdown before taking the manager: concurrent UI/tray/companion
+    // stops must not unload the engine or emit completion for the winning stop.
+    let _stopping_guard = StoppingGuard::try_new()?;
     if !IS_RECORDING.load(Ordering::SeqCst) {
+        if expected_session.is_some() { return Err("Recording session changed".into()); }
         info!("Recording was not active");
         return Ok(());
     }
@@ -700,16 +727,16 @@ pub async fn stop_recording<R: Runtime>(
     // Step 1: Stop audio capture immediately (no more new chunks) with proper error handling
     let manager_for_cleanup = {
         let mut global_manager = RECORDING_MANAGER.lock().unwrap();
+        if let Some(expected) = &expected_session {
+            if !global_manager.as_ref().is_some_and(|manager| Arc::ptr_eq(manager.get_state(), expected)) {
+                return Err("Recording session changed".into());
+            }
+        }
         global_manager.take()
     };
 
-    // Mark the stop tail as in progress so a mic-disconnect fallback that was
-    // queued before Stop short-circuits instead of retrying against the taken
-    // manager. IS_RECORDING itself stays true until the tail completes — the
-    // frontend polls it to keep the stop UI up. RAII so a panic in the tail
-    // below can't leave the flag stuck true.
-    let _stopping_guard = StoppingGuard::new();
-
+    // The entry guard keeps the stop tail exclusive and suppresses microphone
+    // fallback while IS_RECORDING stays true for frontend shutdown progress.
     let stop_result = if let Some(mut manager) = manager_for_cleanup {
         // Use FORCE FLUSH to immediately process all accumulated audio - eliminates 30s delay!
         info!("🚀 Using FORCE FLUSH to eliminate pipeline accumulation delays");

@@ -39,6 +39,7 @@ pub mod analytics;
 pub mod api;
 pub mod audio;
 pub mod config;
+mod companion;
 pub mod console_utils;
 pub mod database;
 pub mod documents;
@@ -506,6 +507,7 @@ pub fn run() {
                 )),
             };
 
+            companion::setup(_app.handle());
             log::info!("Application setup complete");
 
             // Initialize system tray
@@ -612,6 +614,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            companion::companion_report,
+            companion::companion_execute,
+            companion::companion_fail,
             start_recording,
             stop_recording,
             is_recording,
@@ -857,6 +862,7 @@ pub fn run() {
                     tray::focus_main_window(_app_handle);
                 }
                 tauri::RunEvent::Exit => {
+                    companion::cleanup(_app_handle);
                     log::info!("Application exiting, cleaning up resources...");
                     tauri::async_runtime::block_on(async {
                         // Clean up database connection and checkpoint WAL

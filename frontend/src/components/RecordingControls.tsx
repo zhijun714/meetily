@@ -162,6 +162,10 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       onRecordingStop(true);
     } catch (error) {
       console.error('Failed to stop recording:', error);
+      if (String(error).includes('Recording stop already in progress')) {
+        setIsProcessing(false);
+        return; // The winning stop owns the existing global post-processing flow.
+      }
       if (error instanceof Error) {
         console.error('Error details:', {
           message: error.message,
