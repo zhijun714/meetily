@@ -1,8 +1,8 @@
 use crate::summary::templates;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Runtime};
 use tauri_plugin_store::StoreExt;
-use once_cell::sync::Lazy;
 use tracing::{info, warn};
 
 // Serialize mutations, including preference changes, before broadcasting refreshes.
@@ -23,10 +23,19 @@ pub async fn api_get_template_editor<R: Runtime>(
 
 #[tauri::command]
 pub async fn api_save_template<R: Runtime>(
-    app: tauri::AppHandle<R>, template_id: String, template: templates::Template, create: bool,
+    app: tauri::AppHandle<R>,
+    template_id: String,
+    template: templates::Template,
+    create: bool,
+    override_builtin: Option<bool>,
 ) -> Result<templates::TemplateEditor, String> {
     let _guard = TEMPLATE_MUTATIONS.lock().await;
-    let saved = templates::repository()?.save(&template_id, &template, create)?;
+    let repo = templates::repository()?;
+    let saved = if override_builtin.unwrap_or(false) {
+        repo.save_override(&template_id, &template)?
+    } else {
+        repo.save(&template_id, &template, create)?
+    };
     notify(&app);
     Ok(saved)
 }
@@ -43,7 +52,9 @@ pub async fn api_delete_template<R: Runtime>(
 }
 
 #[tauri::command]
-pub async fn api_get_default_template<R: Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
+pub async fn api_get_default_template<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<String, String> {
     let _guard = TEMPLATE_MUTATIONS.lock().await;
     let store = app.store("template_preferences.json").map_err(|e| e.to_string())?;
     let saved = store.get("default_template");
@@ -141,11 +152,7 @@ pub async fn api_get_template_details<R: Runtime>(
 
     let template = templates::get_template(&template_id)?;
 
-    let section_titles: Vec<String> = template
-        .sections
-        .iter()
-        .map(|section| section.title.clone())
-        .collect();
+    let section_titles = template.section_titles();
 
     let details = TemplateDetails {
         id: template_id,

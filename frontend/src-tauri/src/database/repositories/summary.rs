@@ -1,7 +1,7 @@
 use crate::database::models::SummaryProcess;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use tracing::{error, info as log_info};
 
 pub struct SummaryProcessesRepository;
@@ -47,12 +47,14 @@ impl SummaryProcessesRepository {
             return Ok(false);
         }
         let now = Utc::now();
-        let update = sqlx::query("UPDATE summary_processes SET result = ?, updated_at = ? WHERE meeting_id = ?")
-            .bind(&result_json.unwrap())
-            .bind(now)
-            .bind(meeting_id)
-            .execute(&mut *transaction)
-            .await?;
+        let update = sqlx::query(
+            "UPDATE summary_processes SET result = ?, updated_at = ? WHERE meeting_id = ?",
+        )
+        .bind(&result_json.unwrap())
+        .bind(now)
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
         if update.rows_affected() == 0 {
             transaction.rollback().await?;
             return Ok(false);
@@ -150,6 +152,70 @@ impl SummaryProcessesRepository {
         .execute(pool)
         .await?;
         Ok(update.rows_affected() == 1)
+    }
+
+    /// Finalize the active generation and its document title in a single transaction.
+    /// A user title (including a concurrent rename) wins over the model suggestion.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn complete_with_title(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        started_at: DateTime<Utc>,
+        mut result: Value,
+        short_title: Option<&str>,
+        chunk_count: i64,
+        processing_time: f64,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT title, created_at, folder_path, title_manually_edited FROM meetings WHERE id=?",
+        )
+        .bind(meeting_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let old_title: String = row.get("title");
+        let manually_edited: i64 = row.get("title_manually_edited");
+        let final_title = if manually_edited != 0 {
+            old_title
+        } else if let Some(short_title) = short_title.filter(|s| !s.trim().is_empty()) {
+            let folder: Option<String> = row.get("folder_path");
+            let created: String = row.get("created_at");
+            match crate::meeting_title::recording_date(folder.as_deref(), &created) {
+                Ok(date) => crate::meeting_title::canonical_title(date, short_title),
+                Err(_) => old_title,
+            }
+        } else {
+            old_title
+        };
+        result["MeetingName"] = Value::String(final_title.clone());
+        if let Some(markdown) = result.get("markdown").and_then(Value::as_str) {
+            result["markdown"] =
+                Value::String(crate::meeting_title::with_title(markdown, &final_title));
+        }
+        let now = Utc::now();
+        let result_str = serde_json::to_string(&result)
+            .map_err(|e| sqlx::Error::Protocol(format!("Failed to serialize result: {e}")))?;
+        let update = sqlx::query(
+            "UPDATE summary_processes SET status='completed', result=?, updated_at=?, end_time=?, chunk_count=?, processing_time=?, error=NULL, result_backup=NULL, result_backup_timestamp=NULL WHERE meeting_id=? AND start_time=? AND LOWER(status)='pending'"
+        ).bind(result_str).bind(now).bind(now).bind(chunk_count).bind(processing_time)
+            .bind(meeting_id).bind(started_at).execute(&mut *tx).await?;
+        if update.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+        sqlx::query("UPDATE meetings SET title=?, updated_at=? WHERE id=?")
+            .bind(&final_title)
+            .bind(now)
+            .bind(meeting_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE transcript_chunks SET meeting_name=? WHERE meeting_id=?")
+            .bind(&final_title)
+            .bind(meeting_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(final_title))
     }
 
     pub async fn update_process_failed(
@@ -268,6 +334,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completion_uses_generated_title_and_respects_user_renames() {
+        let pool = test_pool().await;
+        sqlx::query("CREATE TABLE meetings(id TEXT PRIMARY KEY,title TEXT,created_at TEXT,folder_path TEXT,updated_at TEXT,title_manually_edited INTEGER DEFAULT 0)")
+            .execute(&pool).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE transcript_chunks(meeting_id TEXT PRIMARY KEY,meeting_name TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (id, manually_edited) in [("generated", 0), ("custom", 1), ("stale", 0)] {
+            sqlx::query("INSERT INTO meetings(id,title,created_at,title_manually_edited) VALUES (?, ?, '2026-10-22T12:00:00Z', ?)")
+                .bind(id).bind(if id == "custom" { "我起的标题" } else { "Original" }).bind(manually_edited)
+                .execute(&pool).await.unwrap();
+            seed_pending(&pool, id, Utc::now(), None, None).await;
+        }
+        let date = crate::meeting_title::recording_date(None, "2026-10-22T12:00:00Z").unwrap();
+        let expected = crate::meeting_title::canonical_title(date, "转写优化");
+        let started: DateTime<Utc> = sqlx::query_scalar(
+            "SELECT start_time FROM summary_processes WHERE meeting_id='generated'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            SummaryProcessesRepository::complete_with_title(
+                &pool,
+                "generated",
+                started,
+                json!({"markdown":"## 结论\n完成"}),
+                Some("转写优化"),
+                1,
+                1.0
+            )
+            .await
+            .unwrap(),
+            Some(expected.clone())
+        );
+        let saved: String =
+            sqlx::query_scalar("SELECT result FROM summary_processes WHERE meeting_id='generated'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(saved.contains(&format!("# {expected}")));
+        let custom_start: DateTime<Utc> = sqlx::query_scalar(
+            "SELECT start_time FROM summary_processes WHERE meeting_id='custom'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            SummaryProcessesRepository::complete_with_title(
+                &pool,
+                "custom",
+                custom_start,
+                json!({"markdown":"## 结论\n完成"}),
+                Some("转写优化"),
+                1,
+                1.0
+            )
+            .await
+            .unwrap(),
+            Some("我起的标题".into())
+        );
+        let stale_start: DateTime<Utc> =
+            sqlx::query_scalar("SELECT start_time FROM summary_processes WHERE meeting_id='stale'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            SummaryProcessesRepository::complete_with_title(
+                &pool,
+                "stale",
+                stale_start - chrono::Duration::seconds(1),
+                json!({"markdown":"bad"}),
+                Some("坏标题"),
+                1,
+                1.0
+            )
+            .await
+            .unwrap(),
+            None
+        );
+        let title: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id='stale'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(title, "Original");
+    }
+
+    #[tokio::test]
     async fn terminal_compare_and_set_preserves_first_writer() {
         let pool = test_pool().await;
         let completed_start = Utc::now();
@@ -346,20 +503,19 @@ mod tests {
         let pool = test_pool().await;
         let current_start = Utc::now();
         seed_pending(&pool, "stale-cancel", current_start, None, None).await;
-        assert!(
-            !SummaryProcessesRepository::update_process_cancelled(
-                &pool,
-                "stale-cancel",
-                current_start - chrono::Duration::nanoseconds(1),
-            )
-            .await
-            .unwrap()
-        );
-        let status: String =
-            sqlx::query_scalar("SELECT status FROM summary_processes WHERE meeting_id = 'stale-cancel'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        assert!(!SummaryProcessesRepository::update_process_cancelled(
+            &pool,
+            "stale-cancel",
+            current_start - chrono::Duration::nanoseconds(1),
+        )
+        .await
+        .unwrap());
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM summary_processes WHERE meeting_id = 'stale-cancel'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(status, "PENDING");
     }
 }

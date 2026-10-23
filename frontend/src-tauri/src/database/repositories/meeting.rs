@@ -61,11 +61,12 @@ impl MeetingsRepository {
         let mut transaction = conn.begin().await?;
 
         // Get meeting details
-        let meeting: Option<MeetingModel> =
-            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?")
-                .bind(meeting_id)
-                .fetch_optional(&mut *transaction)
-                .await?;
+        let meeting: Option<MeetingModel> = sqlx::query_as(
+            "SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?",
+        )
+        .bind(meeting_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
 
         if meeting.is_none() {
             transaction.rollback().await?;
@@ -119,11 +120,12 @@ impl MeetingsRepository {
             ));
         }
 
-        let meeting: Option<MeetingModel> =
-            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?")
-                .bind(meeting_id)
-                .fetch_optional(pool)
-                .await?;
+        let meeting: Option<MeetingModel> = sqlx::query_as(
+            "SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?",
+        )
+        .bind(meeting_id)
+        .fetch_optional(pool)
+        .await?;
 
         Ok(meeting)
     }
@@ -154,7 +156,7 @@ impl MeetingsRepository {
             "SELECT * FROM transcripts
              WHERE meeting_id = ?
              ORDER BY audio_start_time ASC
-             LIMIT ? OFFSET ?"
+             LIMIT ? OFFSET ?",
         )
         .bind(meeting_id)
         .bind(limit)
@@ -181,17 +183,23 @@ impl MeetingsRepository {
 
         let now = Utc::now().naive_utc();
 
-        let rows_affected =
-            sqlx::query("UPDATE meetings SET title = ?, updated_at = ? WHERE id = ?")
-                .bind(new_title)
-                .bind(now)
-                .bind(meeting_id)
-                .execute(&mut *transaction)
-                .await?;
+        let rows_affected = sqlx::query(
+            "UPDATE meetings SET title = ?, updated_at = ?, title_manually_edited = 1 WHERE id = ?",
+        )
+        .bind(new_title)
+        .bind(now)
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
         if rows_affected.rows_affected() == 0 {
             transaction.rollback().await?;
             return Ok(false);
         }
+        sqlx::query("UPDATE transcript_chunks SET meeting_name = ? WHERE meeting_id = ?")
+            .bind(new_title)
+            .bind(meeting_id)
+            .execute(&mut *transaction)
+            .await?;
         transaction.commit().await?;
         Ok(true)
     }

@@ -3,17 +3,15 @@ use crate::database::repositories::{
     summary::SummaryProcessesRepository, transcript_chunk::TranscriptChunksRepository,
 };
 use crate::state::AppState;
+use crate::summary::language_detection::{detect_summary_language, SummaryLanguageDetection};
 use crate::summary::metadata::{
     read_detected_summary_language_from_metadata, read_summary_language_from_metadata,
     write_detected_summary_language_to_metadata, write_summary_language_to_metadata,
 };
-use crate::summary::language_detection::{
-    detect_summary_language, SummaryLanguageDetection,
-};
 use crate::summary::processor::{clean_llm_markdown_detailed, contains_reasoning_marker};
 use crate::summary::service::SummaryService;
-use log::{error as log_error, info as log_info, warn as log_warn};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use log::{error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
@@ -104,7 +102,10 @@ pub async fn api_save_meeting_summary<R: Runtime>(
         meeting_id
     );
     if !summary_is_renderable(&summary) {
-        return Err("Summary contains no visible content or model reasoning markers and was not saved.".into());
+        return Err(
+            "Summary contains no visible content or model reasoning markers and was not saved."
+                .into(),
+        );
     }
     let pool = state.db_manager.pool();
 
@@ -193,9 +194,11 @@ pub async fn api_get_meeting_detected_summary_language<R: Runtime>(
     );
 
     match resolve_meeting_folder(state.db_manager.pool(), &meeting_id).await? {
-        MeetingFolderResolution::Folder(folder) => read_detected_summary_language_from_metadata(&folder)
-            .map(MeetingSummaryLanguagePreference::metadata)
-            .map_err(|e| e.to_string()),
+        MeetingFolderResolution::Folder(folder) => {
+            read_detected_summary_language_from_metadata(&folder)
+                .map(MeetingSummaryLanguagePreference::metadata)
+                .map_err(|e| e.to_string())
+        }
         MeetingFolderResolution::NoFolder => Ok(MeetingSummaryLanguagePreference::local_fallback()),
     }
 }
@@ -216,8 +219,11 @@ pub async fn api_save_meeting_detected_summary_language<R: Runtime>(
 
     match resolve_meeting_folder(state.db_manager.pool(), &meeting_id).await? {
         MeetingFolderResolution::Folder(folder) => {
-            write_detected_summary_language_to_metadata(&folder, detected_summary_language.as_deref())
-                .map_err(|e| e.to_string())?;
+            write_detected_summary_language_to_metadata(
+                &folder,
+                detected_summary_language.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
             read_detected_summary_language_from_metadata(&folder)
                 .map(MeetingSummaryLanguagePreference::metadata)
                 .map_err(|e| e.to_string())
@@ -287,10 +293,10 @@ fn summary_contains_reasoning_marker(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Array(items) => items.iter().any(summary_contains_reasoning_marker),
         serde_json::Value::Object(object) => object.iter().any(|(key, value)| match key.as_str() {
-            "markdown" | "text" | "content" => value
-                .as_str()
-                .is_some_and(contains_reasoning_marker)
-                || value.is_array() && summary_contains_reasoning_marker(value),
+            "markdown" | "text" | "content" => {
+                value.as_str().is_some_and(contains_reasoning_marker)
+                    || value.is_array() && summary_contains_reasoning_marker(value)
+            }
             "summary_json" | "children" => summary_contains_reasoning_marker(value),
             _ => false,
         }),
@@ -348,7 +354,10 @@ fn redact_flagged_reasoning(mut result: serde_json::Value) -> serde_json::Value 
         reasoning_stripped |= sanitize_markdown_value(cache.get_mut("markdown"));
     }
     if reasoning_stripped {
-        object.insert("reasoning_stripped".to_string(), serde_json::Value::Bool(true));
+        object.insert(
+            "reasoning_stripped".to_string(),
+            serde_json::Value::Bool(true),
+        );
     }
     result
 }
@@ -488,7 +497,7 @@ pub async fn api_process_transcript<R: Runtime>(
 
     let pool = state.db_manager.pool().clone();
     let final_prompt = custom_prompt.unwrap_or_else(|| "".to_string());
-    let final_template_id = template_id.unwrap_or_else(|| "daily_standup".to_string());
+    let final_template_id = template_id.unwrap_or_else(|| "standard_meeting".to_string());
 
     // Normalise empty / whitespace-only to None so "" and null behave identically
     let summary_language = summary_language.and_then(|s| {
@@ -517,13 +526,9 @@ pub async fn api_process_transcript<R: Runtime>(
     .await
     {
         let message = format!("Failed to save transcript data: {}", error);
-        let _ = SummaryProcessesRepository::update_process_failed(
-            &pool,
-            &m_id,
-            started_at,
-            &message,
-        )
-        .await;
+        let _ =
+            SummaryProcessesRepository::update_process_failed(&pool, &m_id, started_at, &message)
+                .await;
         return Err(message);
     }
 

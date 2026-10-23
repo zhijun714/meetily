@@ -1,15 +1,19 @@
 use serde_json::Value;
 
-pub fn filename(title: &str, created: &str, id: &str, extension: &str) -> String {
-    fn safe(value: &str, limit: usize) -> String {
-        let name: String = value.chars().map(|c| {
-            if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }
-        }).scan(0, |bytes, c| { *bytes += c.len_utf8(); if *bytes <= limit { Some(c) } else { None } }).collect();
-        let name = name.trim_matches(|c| c == ' ' || c == '.');
-        if name.is_empty() { "meeting".into() } else { name.into() }
-    }
-    // Full ID is retained: meetings with equal titles/dates must never share a file.
-    format!("{}_{}_{}.{}", safe(created.get(..10).unwrap_or(created), 10), safe(title, 60), safe(id, 80), extension)
+pub fn filename(title: &str, created: &str, _id: &str, extension: &str) -> String {
+    let date = chrono::NaiveDate::parse_from_str(created, "%Y%m%d")
+        .ok()
+        .or_else(|| crate::meeting_title::recording_date(None, created).ok());
+    let existing_date = title
+        .get(..8)
+        .filter(|_| title.as_bytes().get(8) == Some(&b'-'))
+        .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y%m%d").ok());
+    let dated = existing_date.or(date).unwrap_or(chrono::NaiveDate::MIN);
+    format!(
+        "{}.{}",
+        crate::meeting_title::canonical_title(dated, title),
+        extension
+    )
 }
 
 pub fn timestamp(seconds: f64) -> String {
@@ -21,7 +25,9 @@ fn escape_inline(text: &str) -> String {
     text.replace('\\', "\\\\").replace('*', "\\*").replace('_', "\\_").replace('[', "\\[").replace(']', "\\]").replace('<', "&lt;").replace('>', "&gt;").replace('`', "\\`")
 }
 fn inline(value: &Value) -> Result<String, String> {
-    let array = value.as_array().ok_or("Unsupported summary inline content; save the summary as Markdown before retrying.")?;
+    let array = value.as_array().ok_or(
+        "Unsupported summary inline content; save the summary as Markdown before retrying.",
+    )?;
     let mut output = String::new();
     for item in array {
         match item.get("type").and_then(Value::as_str) {
@@ -29,7 +35,20 @@ fn inline(value: &Value) -> Result<String, String> {
                 let text = item.get("text").and_then(Value::as_str).ok_or("Invalid summary text")?;
                 let mut text = escape_inline(text);
                 if let Some(styles) = item.get("styles").and_then(Value::as_object) {
-                    if styles.iter().any(|(key, val)| val != &Value::Bool(false) && !val.is_null() && !matches!(key.as_str(), "bold" | "italic" | "strike" | "code" | "underline" | "textColor" | "backgroundColor")) {
+                    if styles.iter().any(|(key, val)| {
+                        val != &Value::Bool(false)
+                            && !val.is_null()
+                            && !matches!(
+                                key.as_str(),
+                                "bold"
+                                    | "italic"
+                                    | "strike"
+                                    | "code"
+                                    | "underline"
+                                    | "textColor"
+                                    | "backgroundColor"
+                            )
+                    }) {
                         return Err("Unsupported summary text style; save the summary as Markdown before retrying.".into());
                     }
                     if styles.get("code").and_then(Value::as_bool) == Some(true) {
@@ -44,11 +63,22 @@ fn inline(value: &Value) -> Result<String, String> {
                 output.push_str(&text);
             }
             Some("link") => {
-                let href = item.get("href").and_then(Value::as_str).ok_or("Invalid summary link")?;
-                if href.contains(['\n', '\r', '<', '>']) { return Err("Unsupported summary link; save the summary as Markdown before retrying.".into()); }
+                let href = item
+                    .get("href")
+                    .and_then(Value::as_str)
+                    .ok_or("Invalid summary link")?;
+                if href.contains(['\n', '\r', '<', '>']) {
+                    return Err(
+                        "Unsupported summary link; save the summary as Markdown before retrying."
+                            .into(),
+                    );
+                }
                 output.push_str(&format!("[{}](<{}>)", inline(&item["content"])?, href));
             }
-            _ => return Err("Unsupported summary inline content; save the summary as Markdown before retrying.".into()),
+            _ => return Err(
+                "Unsupported summary inline content; save the summary as Markdown before retrying."
+                    .into(),
+            ),
         }
     }
     Ok(output)
@@ -121,7 +151,14 @@ pub fn summary_markdown(value: &Value) -> Result<String, String> {
         let title = object.get(key).and_then(|value| value.get("title")).and_then(Value::as_str).unwrap_or(key);
         if !section.is_empty() { output.push_str(&format!("## {}\n\n{}", title, section)); }
     }
-    if output.trim().is_empty() { Err("The saved summary has no exportable content; save the summary again before retrying.".into()) } else { Ok(output) }
+    if output.trim().is_empty() {
+        Err(
+            "The saved summary has no exportable content; save the summary again before retrying."
+                .into(),
+        )
+    } else {
+        Ok(output)
+    }
 }
 
 #[cfg(test)]
@@ -130,9 +167,16 @@ mod tests {
     use serde_json::json;
     #[test]
     fn safe_unique_names_and_timestamps() {
-        let a = filename("../题目: a", "2026-10-21T00:00:00Z", "meeting-a", "txt");
+        let a = filename("../题目: a", "2026-10-21T00:00:00Z", "meeting-a", "md");
         assert!(!a.contains('/'));
-        assert_ne!(a, filename("../题目: a", "2026-10-21T00:00:00Z", "meeting-b", "txt"));
+        assert_eq!(
+            a,
+            filename("../题目: a", "2026-10-21T00:00:00Z", "meeting-b", "md")
+        );
+        assert_eq!(
+            filename("20261022-转写优化", "20261021", "id", "md"),
+            "20261022-转写优化.md"
+        );
         assert_eq!(timestamp(3661.9), "01:01:01");
         assert_eq!(timestamp(-3.0), "00:00:00");
     }

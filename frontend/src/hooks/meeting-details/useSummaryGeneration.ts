@@ -252,7 +252,11 @@ export function useSummaryGeneration({
       setSummaryStatus('completed');
       activeProcessIdRef.current = null;
       setSummaryError(null);
-      if (metadata.normalizationFallback) {
+      if (metadata.conclusionPolishFallback) {
+        toast.warning('总结已保存，结论润色未完成', {
+          description: '已保留原结论，可稍后重新生成。',
+        });
+      } else if (metadata.normalizationFallback) {
         toast.warning('Summary generated with fallback', {
           description: 'English normalization failed, so the original sanitized summary was kept.',
         });

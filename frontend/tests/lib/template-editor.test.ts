@@ -1,42 +1,36 @@
 import { expect, test } from 'bun:test';
-import { duplicateTemplate, moveTemplateSection, resolveTemplateSelection, validateTemplateDraft, type TemplateEditor } from '../../src/lib/template-editor';
-const value = (): TemplateEditor => ({ id: 'standard_meeting', source: 'builtin', template: { name: 'Meeting', description: 'Notes', sections: [
-  { title: 'Summary', instruction: 'Summarize', format: 'paragraph', item_format: 'hint', example_item_format: 'legacy' },
+import { duplicateTemplate, resolveTemplateSelection, templateMarkdown, validateTemplateDraft, type TemplateEditor } from '../../src/lib/template-editor';
+
+const legacy = (): TemplateEditor => ({ id: 'standard_meeting', source: 'builtin', template: { name: 'Meeting', description: 'Notes', sections: [
+  { title: 'Summary', instruction: 'Summarize', format: 'paragraph', item_format: 'preferred', example_item_format: 'legacy' },
   { title: 'Actions', instruction: 'Tasks', format: 'list' },
 ] } });
 
-test('duplicate creates an independent custom draft without losing either optional format', () => {
-  const original = value(); const copy = duplicateTemplate(original);
-  expect(copy.id).toBe(''); expect(copy.source).toBe('custom');
-  expect(copy.template.sections[0]).toEqual(original.template.sections[0]);
-  copy.template.sections[0].title = 'Changed'; expect(original.template.sections[0].title).toBe('Summary');
-  expect(validateTemplateDraft(copy, true)).not.toBeNull(); copy.id = 'my_template';
-  expect(validateTemplateDraft(copy, true)).toBeNull();
+test('legacy templates preserve every generation hint when edited as Markdown', () => {
+  const original = legacy();
+  const markdown = templateMarkdown(original.template);
+  for (const text of ['Notes', '## Summary', 'Summarize', 'prose paragraphs', 'preferred', 'legacy', '## Actions', 'Markdown bullet list']) {
+    expect(markdown).toContain(text);
+  }
+  const copy = duplicateTemplate(original);
+  expect(copy.source).toBe('custom');
+  expect(copy.template.markdown).toBe(markdown);
+  expect(copy.template.sections).toEqual([]);
+  expect(original.template.markdown).toBeUndefined();
 });
 
-test('new IDs are strict and existing safe legacy IDs are kept for backend validation', () => {
-  for (const id of ['../escape', 'space name', '周会.notes', 'a/b', 'a\\b', '']) {
-    const draft = value(); draft.id = id; expect(validateTemplateDraft(draft, true)).not.toBeNull();
-  }
-  const draft = value(); draft.id = '周会.notes'; expect(validateTemplateDraft(draft, false)).toBeNull();
-});
-
-test('validation rejects whitespace and unsupported formats before invoking save', () => {
-  for (const field of ['name', 'description'] as const) {
-    const draft = value(); draft.template[field] = ' \n\t'; expect(validateTemplateDraft(draft, false)).not.toBeNull();
-  }
-  for (const field of ['title', 'instruction'] as const) {
-    const draft = value(); draft.template.sections[0][field] = ' \n'; expect(validateTemplateDraft(draft, false)).not.toBeNull();
-  }
-  const draft = value(); draft.template.sections = []; expect(validateTemplateDraft(draft, false)).not.toBeNull();
-  draft.template.sections = [{ title: 'Test', instruction: 'Test', format: 'html' as any }]; expect(validateTemplateDraft(draft, false)).not.toBeNull();
-});
-
-test('section reordering preserves whole sections and leaves original untouched', () => {
-  const draft = value(); const moved = moveTemplateSection(draft.template.sections, 1, -1);
-  expect(moved.map(s => s.title)).toEqual(['Actions', 'Summary']); expect(moved[1].example_item_format).toBe('legacy');
-  expect(draft.template.sections[0].title).toBe('Summary');
-  expect(moveTemplateSection(moved, 0, -1)).toBe(moved);
+test('name and Markdown source are the only required user content', () => {
+  const draft = legacy();
+  draft.id = 'template_123'; draft.template.description = ''; draft.template.sections = [];
+  draft.template.markdown = '# Short title\n\n## 结论\n保留事实';
+  expect(validateTemplateDraft(draft, true)).toBeNull();
+  draft.template.markdown = 'no section';
+  expect(validateTemplateDraft(draft, true)).not.toBeNull();
+  draft.template.markdown = '## 结论\n内容'; draft.template.name = '  ';
+  expect(validateTemplateDraft(draft, true)).not.toBeNull();
+  draft.template.name = 'Mine'; draft.id = '../escape';
+  expect(validateTemplateDraft(draft, true)).not.toBeNull();
+  expect(validateTemplateDraft({ ...draft, id: '周会.notes' }, false)).toBeNull();
 });
 
 test('persisted default initializes new pages while explicit valid selections survive refresh', () => {

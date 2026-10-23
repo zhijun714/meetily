@@ -3,12 +3,29 @@ use serde_json::json;
 
 async fn fixture() -> (SqlitePool, tempfile::TempDir, DocumentPreferences) {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    sqlx::raw_sql("CREATE TABLE meetings(id TEXT PRIMARY KEY,title TEXT,created_at TEXT); CREATE TABLE transcripts(id TEXT PRIMARY KEY,meeting_id TEXT,transcript TEXT,timestamp TEXT,audio_start_time REAL); CREATE TABLE summary_processes(meeting_id TEXT PRIMARY KEY,status TEXT,result TEXT);")
+    sqlx::raw_sql("CREATE TABLE meetings(id TEXT PRIMARY KEY,title TEXT,created_at TEXT,folder_path TEXT); CREATE TABLE transcripts(id TEXT PRIMARY KEY,meeting_id TEXT,transcript TEXT,timestamp TEXT,audio_start_time REAL); CREATE TABLE summary_processes(meeting_id TEXT PRIMARY KEY,status TEXT,result TEXT);")
         .execute(&pool).await.unwrap();
-    sqlx::raw_sql(include_str!("../../../migrations/20261021000000_add_document_exports.sql")).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO meetings VALUES ('m','Meeting','2026-10-21T00:00:00Z')").execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../migrations/20261021000000_add_document_exports.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!("../../../migrations/20261022000000_meeting_title_source.sql"))
+        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO meetings(id,title,created_at) VALUES ('m','Meeting','2026-10-21T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let folder = tempfile::tempdir().unwrap();
-    let prefs = DocumentPreferences { transcript_enabled: true, transcript_folder: Some(folder.path().to_str().unwrap().into()), summary_enabled: true, summary_folder: Some(folder.path().to_str().unwrap().into()) };
+    let prefs = DocumentPreferences {
+        transcript_enabled: true,
+        transcript_folder: Some(folder.path().to_str().unwrap().into()),
+        summary_enabled: true,
+        summary_folder: Some(folder.path().to_str().unwrap().into()),
+    };
     (pool, folder, prefs)
 }
 async fn text(pool: &SqlitePool, id: &str, body: &str, time: f64) {
@@ -59,19 +76,169 @@ async fn external_edits_and_failed_writes_preserve_database_and_previous_file() 
 #[tokio::test]
 async fn latest_summary_only_empty_and_pending_do_not_overwrite() {
     let (pool, _folder, prefs) = fixture().await;
-    sqlx::query("INSERT INTO summary_processes VALUES ('m','completed',?)").bind(json!({"markdown":"first"}).to_string()).execute(&pool).await.unwrap();
-    let path = export(&pool, &prefs, "m", DocumentKind::Summary, true).await.unwrap().unwrap();
-    sqlx::query("UPDATE summary_processes SET result=?").bind(json!({"summary_json":[{"content":"new edit"}]}).to_string()).execute(&pool).await.unwrap();
-    assert!(export(&pool, &prefs, "m", DocumentKind::Summary, false).await.unwrap_err().contains("Invalid summary block"));
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\n");
-    sqlx::query("UPDATE summary_processes SET result=?, status='pending'").bind(json!({"markdown":"pending"}).to_string()).execute(&pool).await.unwrap();
-    assert!(export(&pool, &prefs, "m", DocumentKind::Summary, false).await.is_err());
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\n");
-    sqlx::query("UPDATE summary_processes SET result=?, status='completed'").bind(json!({"markdown":"latest"}).to_string()).execute(&pool).await.unwrap();
-    let (a, b) = tokio::join!(export(&pool, &prefs, "m", DocumentKind::Summary, true), export(&pool, &prefs, "m", DocumentKind::Summary, false));
+    sqlx::query("INSERT INTO summary_processes VALUES ('m','completed',?)")
+        .bind(json!({"markdown":"first"}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let path = export(&pool, &prefs, "m", DocumentKind::Summary, true)
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("UPDATE summary_processes SET result=?")
+        .bind(json!({"summary_json":[{"content":"new edit"}]}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(export(&pool, &prefs, "m", DocumentKind::Summary, false)
+        .await
+        .unwrap_err()
+        .contains("Invalid summary block"));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# Meeting\n\nfirst\n"
+    );
+    sqlx::query("UPDATE summary_processes SET result=?, status='pending'")
+        .bind(json!({"markdown":"pending"}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(export(&pool, &prefs, "m", DocumentKind::Summary, false)
+        .await
+        .is_err());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# Meeting\n\nfirst\n"
+    );
+    sqlx::query("UPDATE summary_processes SET result=?, status='completed'")
+        .bind(json!({"markdown":"latest"}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(
+        export(&pool, &prefs, "m", DocumentKind::Summary, true),
+        export(&pool, &prefs, "m", DocumentKind::Summary, false)
+    );
     assert_eq!(a.unwrap(), b.unwrap());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), "latest\n");
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "# Meeting\n\nlatest\n"
+    );
 }
+#[tokio::test]
+async fn saved_summary_renames_safely_and_preserves_external_changes() {
+    let (pool, folder, prefs) = fixture().await;
+    sqlx::query("INSERT INTO summary_processes VALUES ('m','completed',?)")
+        .bind(json!({"markdown":"## 结论\n旧结论"}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let original = export(&pool, &prefs, "m", DocumentKind::Summary, false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&original).unwrap(),
+        "# Meeting\n\n## 结论\n旧结论\n"
+    );
+    sqlx::query("UPDATE meetings SET title='20261022-转写优化' WHERE id='m'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let desired = folder.path().canonicalize().unwrap().join("20261022-转写优化.md");
+    let moved = export(&pool, &prefs, "m", DocumentKind::Summary, false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(Path::new(&moved), desired);
+    assert!(!Path::new(&original).exists());
+    assert_eq!(
+        std::fs::read_to_string(&moved).unwrap(),
+        "# 20261022-转写优化\n\n## 结论\n旧结论\n"
+    );
+    std::fs::write(&moved, "external edit").unwrap();
+    sqlx::query("UPDATE meetings SET title='20261022-新标题' WHERE id='m'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(export(&pool, &prefs, "m", DocumentKind::Summary, false)
+        .await
+        .unwrap_err()
+        .contains("outside Meetily"));
+    assert_eq!(std::fs::read_to_string(&moved).unwrap(), "external edit");
+}
+
+#[tokio::test]
+async fn summary_rename_chooses_suffix_when_new_name_is_taken() {
+    let (pool, folder, prefs) = fixture().await;
+    sqlx::query("INSERT INTO summary_processes VALUES ('m','completed',?)")
+        .bind(json!({"markdown":"body"}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let old = export(&pool, &prefs, "m", DocumentKind::Summary, false)
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("UPDATE meetings SET title='20261022-方案' WHERE id='m'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    std::fs::write(folder.path().join("20261022-方案.md"), "unowned").unwrap();
+    let moved = export(&pool, &prefs, "m", DocumentKind::Summary, false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(moved.ends_with("20261022-方案-2.md"));
+    assert_eq!(
+        export(&pool, &prefs, "m", DocumentKind::Summary, false)
+            .await
+            .unwrap(),
+        Some(moved.clone())
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.path().join("20261022-方案.md")).unwrap(),
+        "unowned"
+    );
+    assert!(!Path::new(&old).exists());
+}
+
+#[tokio::test]
+async fn interrupted_rename_retains_old_document_and_retries_without_renaming_again() {
+    let (pool, folder, prefs) = fixture().await;
+    sqlx::query("INSERT INTO summary_processes VALUES ('m','completed',?)")
+        .bind(json!({"markdown":"old"}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let old = export(&pool, &prefs, "m", DocumentKind::Summary, false)
+        .await
+        .unwrap()
+        .unwrap();
+    let previous = std::fs::read_to_string(&old).unwrap();
+    sqlx::query("UPDATE meetings SET title='20261022-更新' WHERE id='m'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let desired = folder.path().join("20261022-更新.md");
+    std::fs::hard_link(&old, &desired).unwrap();
+    sqlx::query("UPDATE document_exports SET path=?, pending_hash=?, rename_from=?, rename_hash=last_hash WHERE meeting_id='m' AND kind='summary'")
+        .bind(desired.to_str().unwrap())
+        .bind(hash("# 20261022-更新\n\nold\n".as_bytes()))
+        .bind(&old)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), previous);
+    let exported = export(&pool, &prefs, "m", DocumentKind::Summary, false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(Path::new(&exported), desired);
+    assert!(!Path::new(&old).exists());
+    assert_eq!(std::fs::read_to_string(&desired).unwrap(), "# 20261022-更新\n\nold\n");
+}
+
 #[tokio::test]
 async fn interrupted_write_can_be_retried_from_pending_hash_and_preferences_validate() {
     let (pool, folder, prefs) = fixture().await;

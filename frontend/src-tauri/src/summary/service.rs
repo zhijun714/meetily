@@ -1,15 +1,15 @@
 use crate::database::repositories::{
     meeting::MeetingsRepository, setting::SettingsRepository, summary::SummaryProcessesRepository,
 };
-use crate::summary::llm_client::LLMProvider;
+use crate::ollama::metadata::ModelMetadataCache;
 use crate::summary::language_detection::detect_summary_language;
+use crate::summary::llm_client::LLMProvider;
 use crate::summary::metadata::read_detected_summary_language_from_metadata;
 use crate::summary::processor::{
     clean_llm_markdown_detailed, extract_meeting_name_from_markdown, generate_meeting_summary,
     language_name_from_code, require_visible_markdown,
 };
 use crate::summary::templates::{self, Template};
-use crate::ollama::metadata::ModelMetadataCache;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -61,6 +61,8 @@ const ENGLISH_CACHE_FIELD: &str = "english_cache";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SummaryCacheSource {
+    #[serde(default)]
+    policy_version: String,
     transcript_fingerprint: String,
     custom_prompt_fingerprint: String,
     template_id: String,
@@ -110,6 +112,7 @@ fn build_summary_cache_source(
     top_p: Option<f32>,
 ) -> SummaryCacheSource {
     SummaryCacheSource {
+        policy_version: super::editorial::POLICY_VERSION.to_string(),
         transcript_fingerprint: stable_text_fingerprint(text),
         custom_prompt_fingerprint: stable_text_fingerprint(custom_prompt),
         template_id: template_id.to_string(),
@@ -265,10 +268,7 @@ impl SummaryService {
         }
     }
 
-    async fn read_detected_summary_language(
-        pool: &SqlitePool,
-        meeting_id: &str,
-    ) -> Option<String> {
+    async fn read_detected_summary_language(pool: &SqlitePool, meeting_id: &str) -> Option<String> {
         let meeting = match MeetingsRepository::get_meeting_metadata(pool, meeting_id).await {
             Ok(Some(meeting)) => meeting,
             Ok(None) => {
@@ -394,33 +394,38 @@ impl SummaryService {
         };
 
         // Get CustomOpenAI config if provider is CustomOpenAI
-        let (custom_openai_endpoint, custom_openai_api_key, custom_openai_max_tokens, custom_openai_temperature, custom_openai_top_p) =
-            if provider == LLMProvider::CustomOpenAI {
-                match SettingsRepository::get_custom_openai_config(&pool).await {
-                    Ok(Some(config)) => {
-                        info!("✓ Using custom OpenAI endpoint: {}", config.endpoint);
-                        (
-                            Some(config.endpoint),
-                            config.api_key,
-                            config.max_tokens.map(|t| t as u32),
-                            config.temperature,
-                            config.top_p,
-                        )
-                    }
-                    Ok(None) => {
-                        let err_msg = "Custom OpenAI provider selected but no configuration found";
-                        Self::fail_and_cleanup(&pool, &meeting_id, started_at, err_msg).await;
-                        return;
-                    }
-                    Err(e) => {
-                        let err_msg = format!("Failed to retrieve custom OpenAI config: {}", e);
-                        Self::fail_and_cleanup(&pool, &meeting_id, started_at, &err_msg).await;
-                        return;
-                    }
+        let (
+            custom_openai_endpoint,
+            custom_openai_api_key,
+            custom_openai_max_tokens,
+            custom_openai_temperature,
+            custom_openai_top_p,
+        ) = if provider == LLMProvider::CustomOpenAI {
+            match SettingsRepository::get_custom_openai_config(&pool).await {
+                Ok(Some(config)) => {
+                    info!("✓ Using custom OpenAI endpoint: {}", config.endpoint);
+                    (
+                        Some(config.endpoint),
+                        config.api_key,
+                        config.max_tokens.map(|t| t as u32),
+                        config.temperature,
+                        config.top_p,
+                    )
                 }
-            } else {
-                (None, None, None, None, None)
-            };
+                Ok(None) => {
+                    let err_msg = "Custom OpenAI provider selected but no configuration found";
+                    Self::fail_and_cleanup(&pool, &meeting_id, started_at, err_msg).await;
+                    return;
+                }
+                Err(e) => {
+                    let err_msg = format!("Failed to retrieve custom OpenAI config: {}", e);
+                    Self::fail_and_cleanup(&pool, &meeting_id, started_at, &err_msg).await;
+                    return;
+                }
+            }
+        } else {
+            (None, None, None, None, None)
+        };
 
         // For CustomOpenAI, use its API key (if any) instead of the empty string
         let final_api_key = if provider == LLMProvider::CustomOpenAI {
@@ -575,7 +580,7 @@ impl SummaryService {
                     "✓ Successfully processed {} chunks for meeting_id: {}. Duration: {:.2}s",
                     generated.successful_chunk_count, meeting_id, duration
                 );
-                let result_json = match build_summary_result_json(
+                let mut result_json = match build_summary_result_json(
                     &generated.final_markdown,
                     &generated.english_markdown,
                     cache_source,
@@ -591,34 +596,29 @@ impl SummaryService {
                     }
                 };
 
-                match SummaryProcessesRepository::update_process_completed(
+                result_json["conclusion_polish_fallback"] =
+                    serde_json::json!(generated.conclusion_polish_fallback);
+                match SummaryProcessesRepository::complete_with_title(
                     &pool,
                     &meeting_id,
                     started_at,
                     result_json,
+                    extract_meeting_name_from_markdown(&generated.final_markdown).as_deref(),
                     generated.successful_chunk_count,
                     duration,
                 )
                 .await
                 {
-                    Ok(true) => {
-                        if let Some(name) =
-                            extract_meeting_name_from_markdown(&generated.final_markdown)
-                                .filter(|name| !name.is_empty())
-                        {
-                            if let Err(error) =
-                                MeetingsRepository::update_meeting_name(&pool, &meeting_id, &name)
-                                    .await
-                            {
-                                error!("Failed to update meeting name for {}: {}", meeting_id, error);
-                            }
-                        }
+                    Ok(Some(_)) => {
                         crate::documents::after_commit(
                             &_app, &pool, &meeting_id, crate::documents::DocumentKind::Summary,
                         ).await;
                         info!("Summary saved successfully for meeting_id: {}", meeting_id);
                     }
-                    Ok(false) => warn!("Skipped stale summary completion for meeting_id: {}", meeting_id),
+                    Ok(None) => warn!(
+                        "Skipped stale summary completion for meeting_id: {}",
+                        meeting_id
+                    ),
                     Err(error) => error!(
                         "Failed to save completed process for {}: {}",
                         meeting_id, error
@@ -810,6 +810,7 @@ mod tests {
         Template {
             name: "Test".to_string(),
             description: "Test template".to_string(),
+            markdown: None,
             sections: vec![crate::summary::templates::TemplateSection {
                 title: section_title.to_string(),
                 instruction: "Summarize this section".to_string(),

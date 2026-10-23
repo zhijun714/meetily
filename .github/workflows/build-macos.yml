@@ -231,7 +231,9 @@ jobs:
         run: |
           cargo test --locked --target aarch64-apple-darwin --lib custom_provider
           cargo test --locked --target aarch64-apple-darwin --lib documents::
-          cargo test --locked --target aarch64-apple-darwin --lib summary::templates
+          cargo test --locked --target aarch64-apple-darwin --lib summary::
+          cargo test --locked --target aarch64-apple-darwin --lib meeting_title::
+          cargo test --locked --target aarch64-apple-darwin --lib database::repositories::summary::
 
       - name: Verify build artifacts
         run: |

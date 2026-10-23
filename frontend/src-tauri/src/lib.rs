@@ -42,6 +42,7 @@ pub mod config;
 pub mod console_utils;
 pub mod database;
 pub mod documents;
+mod meeting_title;
 pub mod notifications;
 pub mod ollama;
 pub mod onboarding;
